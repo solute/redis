@@ -276,25 +276,26 @@ unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec range, dict *dict
     /* Current node is the last with score < or <= min. */
     x = x->level[0].forward;
 
-		/* If there is an offset, just traverse the number of elements without
-		 * checking the score because that is done in the next loop. */
-		while (x && offset--)
-				x = x->level[0].forward;
-
+	/* If there is an offset, just traverse the number of elements without
+	* checking the score because that is done in the next loop. */
+	while (x && offset--) {
+		update[0] = x;
+		x = x->level[0].forward;
+	}
 
     /* Delete nodes while in range. */
     while (x && limit--) {
         zskiplistNode *next;
-				/* Abort when the node is no longer in range. */
-				if (!zslValueLteMax(x->score,&range)) break;
+		/* Abort when the node is no longer in range. */
+		if (!zslValueLteMax(x->score,&range)) break;
 
 
-				next	= x->level[0].forward;
-				zslDeleteNode(zsl,x,update);
-				dictDelete(dict,x->obj);
-				zslFreeNode(x);
-				removed++;
-        x = next;
+		next = x->level[0].forward;
+		zslDeleteNode(zsl,x,update);
+		dictDelete(dict,x->obj);
+		zslFreeNode(x);
+		removed++;
+		x = next;
     }
     return removed;
 }
