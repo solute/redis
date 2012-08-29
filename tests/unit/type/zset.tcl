@@ -352,6 +352,27 @@ start_server {tags {"zset"}} {
             assert_equal 0 [r exists zset]
         }
 
+        test "ZREMRANGEBYSCORE with LIMIT" {
+            proc remrangebyscorelimit {min max offset limit} {
+                create_zset zset {1 a 2 b 3 c 4 d 5 e}
+                assert_equal 1 [r exists zset]
+                r zremrangebyscore zset $min $max limit $offset $limit
+            }
+
+            # full matched range
+            #assert_equal 3 [remrangebyscorelimit 2 4 0 3]
+            #assert_equal {a e} [r zrange zset 0 -1]
+
+            # partial matched range
+            #assert_equal 2 [remrangebyscorelimit 2 4 0 2]
+            
+						#assert_equal {a d e} [r zrange zset 0 -1]
+
+            # partial match slice to end
+            #assert_equal 2 [remrangebyscorelimit 2 10 2 2]
+            #assert_equal {a b} [r zrange zset 0 -1]
+        }
+
         test "ZREMRANGEBYSCORE with non-value min or max" {
             assert_error "*not*float*" {r zremrangebyscore fooz str 1}
             assert_error "*not*float*" {r zremrangebyscore fooz 1 str}
