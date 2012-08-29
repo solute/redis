@@ -261,9 +261,9 @@ zskiplistNode *zslLastInRange(zskiplist *zsl, zrangespec range) {
  * Min and mx are inclusive, so a score >= min || score <= max is deleted.
  * Note that this function takes the reference to the hash table view of the
  * sorted set, in order to remove the elements from the hash table too. */
-unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec range, dict *dict) {
+unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec range, dict *dict, long offset, long limit) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
-    unsigned long removed = 0;
+    long removed = 0;
     int i;
 
     x = zsl->header;
@@ -278,14 +278,26 @@ unsigned long zslDeleteRangeByScore(zskiplist *zsl, zrangespec range, dict *dict
     /* Current node is the last with score < or <= min. */
     x = x->level[0].forward;
 
+	/* If there is an offset, just traverse the number of elements without
+	* checking the score because that is done in the next loop. */
+	while (x && offset--) {
+		update[0] = x;
+		x = x->level[0].forward;
+	}
+
     /* Delete nodes while in range. */
-    while (x && (range.maxex ? x->score < range.max : x->score <= range.max)) {
-        zskiplistNode *next = x->level[0].forward;
-        zslDeleteNode(zsl,x,update);
-        dictDelete(dict,x->obj);
-        zslFreeNode(x);
-        removed++;
-        x = next;
+    while (x && limit--) {
+        zskiplistNode *next;
+		/* Abort when the node is no longer in range. */
+		if (!zslValueLteMax(x->score,&range)) break;
+
+
+		next = x->level[0].forward;
+		zslDeleteNode(zsl,x,update);
+		dictDelete(dict,x->obj);
+		zslFreeNode(x);
+		removed++;
+		x = next;
     }
     return removed;
 }
@@ -676,7 +688,7 @@ unsigned char *zzlInsert(unsigned char *zl, robj *ele, double score) {
     return zl;
 }
 
-unsigned char *zzlDeleteRangeByScore(unsigned char *zl, zrangespec range, unsigned long *deleted) {
+unsigned char *zzlDeleteRangeByScore(unsigned char *zl, zrangespec range, unsigned long *deleted, long offset, long limit) {
     unsigned char *eptr, *sptr;
     double score;
     unsigned long num = 0;
@@ -686,9 +698,15 @@ unsigned char *zzlDeleteRangeByScore(unsigned char *zl, zrangespec range, unsign
     eptr = zzlFirstInRange(zl,range);
     if (eptr == NULL) return zl;
 
+		/* If there is an offset, just traverse the number of elements without
+		 * checking the score because that is done in the next loop. */
+		while (eptr && offset--) {
+			zzlNext(zl,&sptr,&eptr);
+		}
+
     /* When the tail of the ziplist is deleted, eptr will point to the sentinel
      * byte and ziplistNext will return NULL. */
-    while ((sptr = ziplistNext(zl,eptr)) != NULL) {
+    while ((sptr = ziplistNext(zl,eptr)) != NULL && limit--) {
         score = zzlGetScore(sptr);
         if (zslValueLteMax(score,&range)) {
             /* Delete both the element and the score. */
@@ -1022,6 +1040,7 @@ void zremrangebyscoreCommand(redisClient *c) {
     robj *zobj;
     zrangespec range;
     unsigned long deleted;
+		long offset = 0, limit = -1;
 
     /* Parse the range arguments. */
     if (zslParseRange(c->argv[2],c->argv[3],&range) != REDIS_OK) {
@@ -1029,15 +1048,33 @@ void zremrangebyscoreCommand(redisClient *c) {
         return;
     }
 
+    /* Parse optional extra arguments. Note that ZCOUNT will exactly have
+     * 4 arguments, so we'll never enter the following code path. */
+    if (c->argc > 4) {
+        int remaining = c->argc - 4;
+        int pos = 4;
+
+        while (remaining) {
+            if (remaining >= 3 && !strcasecmp(c->argv[pos]->ptr,"limit")) {
+                if ((getLongFromObjectOrReply(c, c->argv[pos+1], &offset, NULL) != REDIS_OK) ||
+                    (getLongFromObjectOrReply(c, c->argv[pos+2], &limit, NULL) != REDIS_OK)) return;
+                pos += 3; remaining -= 3;
+            } else {
+                addReply(c,shared.syntaxerr);
+                return;
+            }
+        }
+    }
+
     if ((zobj = lookupKeyWriteOrReply(c,key,shared.czero)) == NULL ||
         checkType(c,zobj,REDIS_ZSET)) return;
 
     if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
-        zobj->ptr = zzlDeleteRangeByScore(zobj->ptr,range,&deleted);
+        zobj->ptr = zzlDeleteRangeByScore(zobj->ptr,range,&deleted, offset, limit);
         if (zzlLength(zobj->ptr) == 0) dbDelete(c->db,key);
     } else if (zobj->encoding == REDIS_ENCODING_SKIPLIST) {
         zset *zs = zobj->ptr;
-        deleted = zslDeleteRangeByScore(zs->zsl,range,zs->dict);
+        deleted = zslDeleteRangeByScore(zs->zsl,range,zs->dict, offset, limit);
         if (htNeedsResize(zs->dict)) dictResize(zs->dict);
         if (dictSize(zs->dict) == 0) dbDelete(c->db,key);
     } else {
